@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "BleClient"
         private const val SCAN_DURATION_MS = 30000L
-        private const val MAX_MTU = 517
+        private const val MAX_MTU = 247
         val SERVICE_UUID: UUID = UUID.fromString("12345678-1234-1234-1234-123456789abc")
         val CHARACTERISTIC_UUID: UUID = UUID.fromString("87654321-4321-4321-4321-cba987654321")
     }
@@ -103,7 +103,10 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == BluetoothDevice.ACTION_BOND_STATE_CHANGED) {
                 val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    intent.getParcelableExtra(
+                        BluetoothDevice.EXTRA_DEVICE,
+                        BluetoothDevice::class.java
+                    )
                 } else {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
@@ -116,6 +119,7 @@ class MainActivity : ComponentActivity() {
                             device?.let { connectGatt(it) }
                         }
                     }
+
                     BluetoothDevice.BOND_NONE -> {
                         connectionStatus = "Bonding failed"
                     }
@@ -173,6 +177,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connectionStatus = "Disconnected"
                     connectedDevice = null
@@ -246,15 +251,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasBluetoothScanPermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        return ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_SCAN
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun hasBluetoothConnectPermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        return ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun initializeBluetooth() {
-        bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
         bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
     }
@@ -333,9 +344,11 @@ class MainActivity : ComponentActivity() {
                     connectionStatus = "Bonding..."
                     device.bluetoothDevice.createBond()
                 }
+
                 BluetoothDevice.BOND_BONDED -> {
                     connectGatt(device.bluetoothDevice)
                 }
+
                 BluetoothDevice.BOND_BONDING -> {
                     connectionStatus = "Bonding..."
                 }
@@ -360,7 +373,8 @@ class MainActivity : ComponentActivity() {
                 this,
                 false,
                 gattCallback,
-                BluetoothDevice.TRANSPORT_LE
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
             )
         } catch (e: SecurityException) {
             connectionStatus = "Permission error"
