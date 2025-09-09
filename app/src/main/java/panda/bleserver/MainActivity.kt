@@ -16,6 +16,7 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.ParcelUuid
 import android.util.Log
@@ -77,12 +78,28 @@ class MainActivity : ComponentActivity() {
     }
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
+
+        override fun onServiceAdded(status: Int, service: BluetoothGattService?) {
+            super.onServiceAdded(status, service)
+            Log.d(TAG, "onServiceAdded: status=$status")
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    startAdvertising()
+                }, 100)
+            } else {
+                serverStatus = "Service add failed: $status"
+            }
+        }
+
         override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
             super.onConnectionStateChange(device, status, newState)
+            Log.d(TAG, "onConnectionStateChange: device=${device?.address}, status=$status, newState=$newState")
 
             device?.let {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        Log.d(TAG, "Device connected: ${it.address}")
                         val currentDevices = connectedDevices.toMutableList()
                         if (!currentDevices.contains(it.address)) {
                             currentDevices.add(it.address)
@@ -90,6 +107,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
+                        Log.d(TAG, "Device disconnected: ${it.address}")
                         val currentDevices = connectedDevices.toMutableList()
                         currentDevices.remove(it.address)
                         connectedDevices = currentDevices
@@ -108,25 +126,94 @@ class MainActivity : ComponentActivity() {
             value: ByteArray?
         ) {
             super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value)
+            Log.d(TAG, "onCharacteristicWriteRequest: device=${device?.address}, requestId=$requestId, characteristic=${characteristic?.uuid}, responseNeeded=$responseNeeded, valueLength=${value?.size}")
 
             if (characteristic?.uuid == CHARACTERISTIC_UUID && value != null) {
                 val receivedJson = String(value, Charsets.UTF_8)
+                Log.d(TAG, "Received data: $receivedJson")
                 receivedData = receivedJson
 
-                if (responseNeeded && hasBluetoothConnectPermission()) {
+                if (responseNeeded) {
                     try {
-                        bluetoothGattServer?.sendResponse(
+                        val success = bluetoothGattServer?.sendResponse(
                             device,
                             requestId,
                             BluetoothGatt.GATT_SUCCESS,
                             offset,
                             null
                         )
+                        Log.d(TAG, "Response sent: $success")
                     } catch (e: SecurityException) {
                         Log.e(TAG, "Security exception sending response", e)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to send response", e)
                     }
+                } else {
+                    Log.d(TAG, "No response needed")
+                }
+            } else {
+                Log.w(TAG, "Write request for unknown characteristic or null value")
+                if (responseNeeded) {
+                    try {
+                        bluetoothGattServer?.sendResponse(
+                            device,
+                            requestId,
+                            BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED,
+                            offset,
+                            null
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to send error response", e)
+                    }
+                }
+            }
+        }
+
+        override fun onCharacteristicReadRequest(
+            device: BluetoothDevice?,
+            requestId: Int,
+            offset: Int,
+            characteristic: BluetoothGattCharacteristic?
+        ) {
+            super.onCharacteristicReadRequest(device, requestId, offset, characteristic)
+            Log.d(TAG, "onCharacteristicReadRequest: device=${device?.address}, characteristic=${characteristic?.uuid}")
+
+            try {
+                bluetoothGattServer?.sendResponse(
+                    device,
+                    requestId,
+                    BluetoothGatt.GATT_SUCCESS,
+                    offset,
+                    "OK".toByteArray()
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send read response", e)
+            }
+        }
+
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice?,
+            requestId: Int,
+            descriptor: android.bluetooth.BluetoothGattDescriptor?,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray?
+        ) {
+            super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value)
+            Log.d(TAG, "onDescriptorWriteRequest")
+
+            if (responseNeeded) {
+                try {
+                    bluetoothGattServer?.sendResponse(
+                        device,
+                        requestId,
+                        BluetoothGatt.GATT_SUCCESS,
+                        offset,
+                        null
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send descriptor response", e)
                 }
             }
         }
@@ -135,12 +222,22 @@ class MainActivity : ComponentActivity() {
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
             super.onStartSuccess(settingsInEffect)
+            Log.d(TAG, "Advertising started successfully")
             serverStatus = "Running"
         }
 
         override fun onStartFailure(errorCode: Int) {
             super.onStartFailure(errorCode)
-            serverStatus = "Failed"
+            val errorMessage = when (errorCode) {
+                ADVERTISE_FAILED_ALREADY_STARTED -> "Already started"
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "Data too large"
+                ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "Feature unsupported"
+                ADVERTISE_FAILED_INTERNAL_ERROR -> "Internal error"
+                ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "Too many advertisers"
+                else -> "Unknown error: $errorCode"
+            }
+            Log.e(TAG, "Advertising failed: $errorMessage")
+            serverStatus = "Failed: $errorMessage"
         }
     }
 
@@ -162,19 +259,34 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestPermissions() {
-        val permissions = arrayOf(
-            Manifest.permission.BLUETOOTH_ADVERTISE,
-            Manifest.permission.BLUETOOTH_CONNECT
-        )
-        permissionLauncher.launch(permissions)
+        val permissions = mutableListOf<String>()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            permissions.add(Manifest.permission.BLUETOOTH)
+            permissions.add(Manifest.permission.BLUETOOTH_ADMIN)
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+        permissionLauncher.launch(permissions.toTypedArray())
     }
 
     private fun hasBluetoothAdvertisePermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun hasBluetoothConnectPermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun initializeBluetooth() {
@@ -213,18 +325,20 @@ class MainActivity : ComponentActivity() {
 
             characteristic = BluetoothGattCharacteristic(
                 CHARACTERISTIC_UUID,
-                BluetoothGattCharacteristic.PROPERTY_WRITE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE
+                BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_READ,
+                BluetoothGattCharacteristic.PERMISSION_WRITE or BluetoothGattCharacteristic.PERMISSION_READ
             )
 
             service.addCharacteristic(characteristic)
-            bluetoothGattServer?.addService(service)
 
-            startAdvertising()
+            val success = bluetoothGattServer?.addService(service)
+            Log.d(TAG, "Add service result: $success")
 
         } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception starting server", e)
             serverStatus = "Permission error"
         } catch (e: Exception) {
+            Log.e(TAG, "Exception starting server", e)
             serverStatus = "Error"
         }
     }
@@ -253,20 +367,27 @@ class MainActivity : ComponentActivity() {
 
         try {
             val settings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .setConnectable(true)
+                .setTimeout(0)
                 .build()
 
             val data = AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
+                .setIncludeDeviceName(false)
                 .setIncludeTxPowerLevel(false)
                 .addServiceUuid(ParcelUuid(SERVICE_UUID))
                 .build()
 
+            Log.d(TAG, "Starting legacy advertising")
             bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
+
         } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception starting advertising", e)
             serverStatus = "Permission error"
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception starting advertising", e)
+            serverStatus = "Advertising error"
         }
     }
 
@@ -291,7 +412,7 @@ class MainActivity : ComponentActivity() {
                         fontWeight = FontWeight.Medium
                     )
 
-                    if (serverStatus == "Stopped" || serverStatus == "Failed" || serverStatus == "Error" || serverStatus == "Permission error" || serverStatus == "Permissions denied") {
+                    if (serverStatus == "Stopped" || serverStatus.startsWith("Failed") || serverStatus == "Error" || serverStatus == "Permission error" || serverStatus == "Permissions denied") {
                         Button(
                             onClick = { startServer() },
                             modifier = Modifier.fillMaxWidth()
